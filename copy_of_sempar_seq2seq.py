@@ -274,6 +274,8 @@ class DecoderSimple(nn.Module):
             output = self.W_s(h)
             #output dim (1,output_size)
             outputs.append(output)
+            if evaluation_mode and torch.argmax(output).item() == EOS_IDX:
+                break
         #outputs dim (seq_len, output_size)
         outputs = torch.cat(outputs, dim=0)
         ### --------------
@@ -304,21 +306,24 @@ def train_single_example(input_tensor, target_tensor, enc, dec,
 
     if dec.uses_copying:
         ### YOUR CODE HERE
-        # compare_tarhet shaped is (target_seq_len)
-        compare_target = target_tensor.view(-1)
-        criterion_target = torch.nn.functional.one_hot(compare_target,
-                                                       num_classes=decoder_outputs.shape[1]).float()
-        # for UNKS in target_tensor
-        # put in criterion_target 0 in columns of vocab_logical.n_tokens
-        #                    and  1 in columns of additional colmns from source
-        not_in_logical_vec = torch.zeros(decoder_outputs.shape[1])
-        not_in_logical_vec[vocab_logical.n_tokens:] = 1 # / (decoder_outputs.shape[1] - vocab_logical.n_tokens)
-        not_in_logical_vec = not_in_logical_vec.float()
-        for i, idx in enumerate(compare_target):
-            if idx == UNK_IDX:
-                # new_idx = torch.tensor(torch.argmax(decoder_outputs[i]))
-                # criterion_target[i] = torch.nn.functional.one_hot(new_idx, decoder_outputs.shape[1])
-                criterion_target[i] = not_in_logical_vec
+        criterion_target = target_tensor.view(-1)
+        # # compare_target shaped is (target_seq_len)
+        # compare_target = target_tensor.view(-1)
+        # # criterion_target = torch.nn.functional.one_hot(compare_target,
+        # #                                                num_classes=decoder_outputs.shape[1]).float()
+        # criterion_target = torch.zeros(decoder_outputs.shape, device=device).float()
+        # # for UNKS in target_tensor
+        # # put in criterion_target 0 in columns of vocab_logical.n_tokens
+        # #                    and  1 in columns of additional colmns from source
+        # not_in_logical_vec = torch.zeros(decoder_outputs.shape[1], device=device)
+        # not_in_logical_vec[vocab_logical.n_tokens:] = 1 # / (decoder_outputs.shape[1] - vocab_logical.n_tokens)
+        # not_in_logical_vec = not_in_logical_vec.float()
+        #
+        # for i, idx in enumerate(compare_target):
+        #     if idx.item() == UNK_IDX:
+        #         criterion_target[i] = not_in_logical_vec
+        #     else:
+        #         criterion_target[i][idx.item()] = 1.0
         ### --------------
     else:
         criterion_target = target_tensor.view(-1)
@@ -480,26 +485,38 @@ def evaluate(sentences, enc, dec, print_sentences=True):
                 ### YOUR CODE HERE
                 src_not_in_logical_cnt = 0
                 len_logical = vocab_logical.n_tokens
-                idx_to_word = {}
-                
+                decoded_idx_to_word = {}
+                logical_words = {}
+
                 words = input_sentence.split(' ')
                 
                 for i, word_idx in enumerate(input_tensor.squeeze(1)):
-                    idx = vocab_logical.get_index_from_parallel_index(word_idx)
-                    if idx == UNK_IDX: # not in the logical vocab
-                        idx = len_logical + src_not_in_logical_cnt
-                        src_not_in_logical_cnt += 1
-                        idx_to_word[idx] = words[i-1]
-                    
+                    actual_word_idx = word_idx.item()
+                    logical_idx = vocab_logical.get_index_from_parallel_index(actual_word_idx)
+                    if logical_idx == UNK_IDX:
+                        if actual_word_idx == SOS_IDX:
+                            curr_word = SOS_STR
+                        elif actual_word_idx == EOS_IDX:
+                            curr_word = EOS_STR
+                        else:
+                            curr_word = words[i]
+                            possible_word_or_UNK = enc.vocab.i2t[actual_word_idx]
+
+                        if curr_word not in logical_words: #word did not repeat so far
+                            idx = len_logical + src_not_in_logical_cnt
+                            src_not_in_logical_cnt += 1
+                            decoded_idx_to_word[idx] = curr_word
+
+
                 decoded_tokens = []
                 for idx in decoded_indices:
                     if idx.item() in dec.vocab.i2t:
                         # print("idx in i2t")
                         decoded_tokens.append(dec.vocab.i2t[idx.item()])
                     else:
-                        print("idx not in i2t:", idx_to_word[idx.item()])
+                        print("idx not in i2t:", decoded_idx_to_word[idx.item()])
                         # print(idx, len(dec.vocab.i2t))
-                        decoded_tokens.append(idx_to_word[idx.item()])
+                        decoded_tokens.append(decoded_idx_to_word[idx.item()])
                 ### --------------
 
             else:
@@ -629,7 +646,8 @@ class DecoderAttention(DecoderSimple):
             #output dim (1,output_size)
             output = self.W_s(torch.cat((h, attention_vec), dim=1))
             outputs.append(output)
-        
+            if evaluation_mode and torch.argmax(output).item() == EOS_IDX:
+                break
         #outputs dim (seq_len, output_size)
         outputs = torch.cat(outputs, dim=0)
 
@@ -687,7 +705,6 @@ class DecoderAttentionWithCopying(DecoderAttention):
     def forward(self, targets, h, enc_outputs, enc_input, evaluation_mode=False):
 
         ### YOUR CODE HERE 
-        # (h, encoder_hiddens_proj, enc_outputs_matrix)
         def CalculateAttention(query, keys, values):
             """ Calculates the attention vector. """
             
@@ -722,26 +739,26 @@ class DecoderAttentionWithCopying(DecoderAttention):
         # words_not_in_logical = [idx for idx in enc_inputs.squeeze(1) if vocab_logical.get_index_from_parallel_index(idx) == UNK_IDX]
         
 
-        # for each word(index in natural vocab) in source map to index in combinded
+        # for each word(index in natural vocab) in source map to index in combined
         natural_to_combined = [] # [(index in logical if in logical else len(logical) + idx in words not in logical)]
+        not_logical_in_combined = {} #dict from word_idx to its place in combined
         src_not_in_logical_cnt = 0
         len_logical = vocab_logical.n_tokens
 
         for word_idx in enc_input.squeeze(1):
             idx = vocab_logical.get_index_from_parallel_index(word_idx)
-            if idx == UNK_IDX: # not in the logical vocab
-                idx = len_logical + src_not_in_logical_cnt
-                src_not_in_logical_cnt += 1
+            if idx == UNK_IDX:  # not in the logical vocab
+                # handle repeating words in the question
+                if word_idx not in not_logical_in_combined:
+                    idx = len_logical + src_not_in_logical_cnt
+                    not_logical_in_combined[word_idx] = idx
+                    src_not_in_logical_cnt += 1
+                else:
+                    idx = not_logical_in_combined[word_idx]
             natural_to_combined.append(idx)
-        # print("src_not_in", src_not_in_logical_cnt)
-        
-        
-
-
-        # [logical words, sent_not_in logical]
 
         for i, target in enumerate(targets[:-1]):
-            combined_dist = torch.zeros((1, len_logical + src_not_in_logical_cnt))
+            combined_dist = torch.zeros((1, len_logical + src_not_in_logical_cnt), device=device)
             # target dim (1)
             # input dim  (1, hidden_size)
             input = self.embedding(target)
@@ -750,17 +767,16 @@ class DecoderAttentionWithCopying(DecoderAttention):
                 argmax_idx = torch.tensor(torch.argmax(output, dim=1))
                 if argmax_idx >= len_logical:
                     # TODO can we do something else here
-                    argmax_idx = torch.tensor([UNK_IDX], dtype=torch.long)
+                    argmax_idx = torch.tensor([UNK_IDX], dtype=torch.long, device=device)
                 input = self.embedding(argmax_idx)
 
             # h dim (1,hidden_size)
-            print(torch.sum(input))
             h = self.gru_cell(input, h)
             att_scores, encoder_attention_vec = CalculateAttention(h, encoder_hiddens_proj, enc_outputs_matrix)
             
             #output\target_vocab_dist dim (1,output_size)
             target_vocab_dist = self.W_s(torch.cat((h, encoder_attention_vec), dim=1))
-            target_vocab_dist = F.softmax(target_vocab_dist)
+            # target_vocab_dist = F.softmax(target_vocab_dist)
             
             # calculate p_gen
             # sigmoid(w1*h+w2*c+w3*y_{t-1})
@@ -773,16 +789,17 @@ class DecoderAttentionWithCopying(DecoderAttention):
             #     combined_dist[0][idx] = dist
 
             # enc_input dim (source_seq_len,1)
-            source_sent = enc_input.squeeze(1) 
-            for i,word_idx in enumerate(source_sent):
-                combined_dist[0][natural_to_combined[i]] += source_dist[i]
+            # source_sent = enc_input.squeeze(1)
+            # for i,word_idx in enumerate(source_sent):
+            #     combined_dist[0][natural_to_combined[i]] += source_dist[i]
 
 
             # combind_dist = p_gen * target_vocab_dist + (1 - p_gen) * att_scores # TODO chane att_scores to correct indeices
 
             output = combined_dist
             outputs.append(combined_dist)
-        
+            if evaluation_mode and torch.argmax(output).item() == EOS_IDX:
+                break
         #outputs dim (seq_len, output_size)
         outputs = torch.cat(outputs, dim=0)
         ### --------------
@@ -834,7 +851,6 @@ def is_entity(token):
 
 # PLACE TO ADD OPTIONAL ADDITIONAL CODE TO BE USED IN THE COPYING CLAUSE OF `evaluate`
 
-
 # ------------------------------------------------------------------------------------
 
 """### Testing Question 3
@@ -851,7 +867,7 @@ set_random_seeds()
 vocab_logical.set_parallel_vocab(vocab_natural)
 enc3 = EncoderRNN(enc_input_size, enc_hidden_size, vocab_natural).to(device)
 dec3 = DecoderAttentionWithCopying(dec_input_size, dec_hidden_size, vocab_logical, enc_hidden_size).to(device)
-criterion3 = nn.BCEWithLogitsLoss()
+criterion3 = nn.CrossEntropyLoss()#nn.BCEWithLogitsLoss()
 
 losses3, train_accs3, dev_accs3 = train(n_epochs, train_sentences, dev_sentences, enc3, dec3, criterion3)
 plot_accuracies(train_accs3, dev_accs3, 'attention_with_copying_decoder')
