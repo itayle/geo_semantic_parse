@@ -522,6 +522,7 @@ def evaluate(sentences, enc, dec, print_sentences=True):
 
             decoded_sentence = ' '.join(decoded_tokens[:-1])  # ignore the EOS token
 
+            #TODO remove prints
             print()
             print(decoded_sentence)
             print(target_sentence)
