@@ -782,8 +782,8 @@ class DecoderAttentionWithCopying(DecoderAttention):
             
             # calculate p_gen
             # sigmoid(w1*h+w2*c+w3*y_{t-1})
-            # linear_input = torch.cat((h, encoder_attention_vec, input), dim=1)
-            p_gen = 0.5#torch.sigmoid(self.W_gen(linear_input)).item()
+            linear_input = torch.cat((h, encoder_attention_vec, input), dim=1)
+            p_gen = torch.sigmoid(self.W_gen(linear_input)).item()
             target_dist = p_gen * target_vocab_dist
             source_dist = (1 - p_gen) * att_scores.squeeze(0)
             combined_dist[:,:len_logical] = target_dist
