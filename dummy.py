@@ -1,6 +1,8 @@
 import torch
 import random
 
-a = torch.tensor([[1,2],[3,4]])
-b=torch.zeros(a.shape)
-print(a.shape, b.shape)
+a = torch.tensor(10)
+if a>2:
+    print("hi")
+else:
+    print("not")
